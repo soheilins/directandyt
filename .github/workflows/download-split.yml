@@ -1,0 +1,52 @@
+name: Download & Split (Chunk-by-Chunk)
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Direct file URL'
+        required: true
+      folder_name:
+        description: 'Target folder name'
+        required: true
+
+jobs:
+  download-and-split:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create folder
+        run: mkdir -p "${{ github.event.inputs.folder_name }}/chunks"
+
+      - name: Download file
+        run: |
+          curl -L -o "${{ github.event.inputs.folder_name }}/original" "${{ github.event.inputs.file_url }}"
+
+      - name: Split into 10MB chunks
+        run: |
+          cd "${{ github.event.inputs.folder_name }}/chunks"
+          split -b 10M -d ../original chunk_
+          for f in chunk_*; do mv "$f" "${f}.part"; done
+          rm ../original
+
+      - name: Commit chunks one by one
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          CHUNK_DIR="${{ github.event.inputs.folder_name }}/chunks"
+          for chunk_file in $(ls -v $CHUNK_DIR); do
+            git add "$CHUNK_DIR/$chunk_file"
+            git commit -m "Add chunk $chunk_file for ${{ github.event.inputs.folder_name }}"
+            git push
+            sleep 1
+          done
+          # Marker file to indicate completion
+          echo "done" > "${{ github.event.inputs.folder_name }}/_complete.txt"
+          git add "${{ github.event.inputs.folder_name }}/_complete.txt"
+          git commit -m "Complete ${{ github.event.inputs.folder_name }}"
+          git push

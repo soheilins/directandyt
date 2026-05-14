@@ -1,0 +1,106 @@
+name: YouTube Download (Chunk-by-Chunk)
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL'
+        required: true
+      quality:
+        description: 'Desired quality (e.g. 720p, best)'
+        required: true
+        default: '720p'
+      folder_name:
+        description: 'Target folder name'
+        required: true
+
+jobs:
+  download-and-split:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install yt-dlp & ffmpeg
+        run: |
+          sudo apt update
+          sudo apt install -y ffmpeg
+          pip install --upgrade yt-dlp
+
+      - name: Connect to Cloudflare WARP (optional, helps with geo-restrictions)
+        uses: viperadnan-git/setup-warp@v1
+        with:
+          mode: client
+          stack: ipv4
+
+      - name: Download video with selected quality
+        id: download
+        run: |
+          mkdir -p "${{ github.event.inputs.folder_name }}"
+          QUALITY="${{ github.event.inputs.quality }}"
+          URL="${{ github.event.inputs.video_url }}"
+
+          if [ "$QUALITY" = "best" ]; then
+            FORMAT="bestvideo+bestaudio/best"
+          else
+            HEIGHT=$(echo "$QUALITY" | sed 's/p//')
+            FORMAT="bestvideo[height<=${HEIGHT}]+bestaudio/best[height<=${HEIGHT}]/best"
+          fi
+
+          echo "Trying format: $FORMAT with web_safari client"
+          if yt-dlp -f "$FORMAT" \
+               -o "${{ github.event.inputs.folder_name }}/video.mp4" \
+               --merge-output-format mp4 \
+               --no-playlist \
+               --extractor-args "youtube:player_client=web_safari;formats=missing_pot" \
+               "$URL"; then
+            echo "Downloaded with requested quality (web_safari)."
+          elif yt-dlp -f "$FORMAT" \
+               -o "${{ github.event.inputs.folder_name }}/video.mp4" \
+               --merge-output-format mp4 \
+               --no-playlist \
+               --extractor-args "youtube:player_client=ios;formats=missing_pot" \
+               "$URL"; then
+            echo "Downloaded with requested quality (ios client)."
+          elif yt-dlp -f "$FORMAT" \
+               -o "${{ github.event.inputs.folder_name }}/video.mp4" \
+               --merge-output-format mp4 \
+               --no-playlist \
+               --extractor-args "youtube:player_client=tv;formats=missing_pot" \
+               "$URL"; then
+            echo "Downloaded with requested quality (tv client)."
+          else
+            echo "Falling back to best available."
+            yt-dlp -f "bestvideo+bestaudio/best" \
+                   -o "${{ github.event.inputs.folder_name }}/video.mp4" \
+                   --merge-output-format mp4 \
+                   --no-playlist \
+                   "$URL" || { echo "Download completely failed."; exit 1; }
+          fi
+
+      - name: Split into 10MB chunks
+        run: |
+          mkdir -p "${{ github.event.inputs.folder_name }}/chunks"
+          cd "${{ github.event.inputs.folder_name }}/chunks"
+          split -b 10M -d ../video.mp4 chunk_
+          for f in chunk_*; do mv "$f" "${f}.part"; done
+          rm ../video.mp4
+
+      - name: Commit chunks one by one
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          CHUNK_DIR="${{ github.event.inputs.folder_name }}/chunks"
+          for chunk_file in $(ls -v $CHUNK_DIR); do
+            git add "$CHUNK_DIR/$chunk_file"
+            git commit -m "Add chunk $chunk_file for ${{ github.event.inputs.folder_name }}"
+            git push
+            sleep 1
+          done
+          echo "done" > "${{ github.event.inputs.folder_name }}/_complete.txt"
+          git add "${{ github.event.inputs.folder_name }}/_complete.txt"
+          git commit -m "Complete ${{ github.event.inputs.folder_name }}"
+          git push

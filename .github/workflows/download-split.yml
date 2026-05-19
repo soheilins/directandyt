@@ -27,6 +27,17 @@ jobs:
         run: |
           curl -L -o "${{ github.event.inputs.folder_name }}/original" "${{ github.event.inputs.file_url }}"
 
+      - name: Extract original filename from URL
+        id: get_filename
+        run: |
+          # Try to extract filename from URL (remove query strings)
+          RAW_FILENAME=$(basename "${{ github.event.inputs.file_url }}" | sed 's/?.*//')
+          if [ -z "$RAW_FILENAME" ] || [ "$RAW_FILENAME" = "." ] || [ "$RAW_FILENAME" = "/" ]; then
+            echo "original_filename=downloaded_file.bin" >> $GITHUB_OUTPUT
+          else
+            echo "original_filename=$RAW_FILENAME" >> $GITHUB_OUTPUT
+          fi
+
       - name: Split into 10MB chunks
         run: |
           cd "${{ github.event.inputs.folder_name }}/chunks"
@@ -45,8 +56,9 @@ jobs:
             git push
             sleep 1
           done
-          # Marker file to indicate completion
+          # Write completion marker with original filename
           echo "done" > "${{ github.event.inputs.folder_name }}/_complete.txt"
+          echo "filename=${{ steps.get_filename.outputs.original_filename }}" >> "${{ github.event.inputs.folder_name }}/_complete.txt"
           git add "${{ github.event.inputs.folder_name }}/_complete.txt"
           git commit -m "Complete ${{ github.event.inputs.folder_name }}"
           git push
